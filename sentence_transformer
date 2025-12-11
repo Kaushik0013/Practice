@@ -17,10 +17,10 @@ collection = client.get_or_create_collection("data")
 # -------- EMBEDDING MODEL --------
 encoder = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Create embeddings for each word
+# Embed each word
 embeddings = encoder.encode(words).tolist()
 
-# Store in Chroma
+# Store words in Chroma
 collection.add(
     ids=[str(i) for i in range(len(words))],
     documents=words,
@@ -29,19 +29,25 @@ collection.add(
 
 # -------- QUERY --------
 query_word = "animal"
-query_vector = encoder.encode([query_word]).tolist()
+query_embedding = encoder.encode([query_word]).tolist()
 
 results = collection.query(
-    query_embeddings=query_vector,
-    n_results=30
+    query_embeddings=query_embedding,
+    n_results=len(words)   # search everything
 )
 
-closest_words = results["documents"][0]
-print(closest_words)
+docs = results["documents"][0]
+dists = results["distances"][0]
 
-# -------- SAVE OUTPUT --------
+# -------- FILTER SIMILAR WORDS --------
+animal_words = [w for w, d in zip(docs, dists) if d < 0.60]
+
+print(animal_words)
+
+# Optional save
 with open("output.txt", "w") as file:
-    for w in closest_words:
+    for w in animal_words:
         file.write(w + "\n")
+
 
 
