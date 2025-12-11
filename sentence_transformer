@@ -2,54 +2,46 @@ from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 import chromadb
 import re
-import numpy as np
 
-# ----- LOAD LOCAL MODEL -----
-model = SentenceTransformer('path/to/your/local/miniLM-model')
+# -------- READ PDF --------
+reader = PdfReader("animal.pdf")
+text = " ".join([(page.extract_text() or "") for page in reader.pages]).lower()
 
-# ----- READ PDF -----
-pdf = PdfReader("animal.pdf")
-text = " ".join([p.extract_text() or "" for p in pdf.pages]).lower()
+# -------- EXTRACT WORDS --------
+words = re.findall(r"[A-Za-z]+", text)
 
-# ----- EXTRACT NOUNS (4-12 letters) -----
-chunks = re.findall(r'\b[a-z]{4,12}\b', text)
-
-# ----- CHROMA DB -----
+# -------- SETUP CHROMA --------
 client = chromadb.Client()
-col = client.get_or_create_collection("data")
-embs = model.encode(chunks).tolist()
-col.add(ids=[str(i) for i in range(len(chunks))], documents=chunks, embeddings=embs)
+collection = client.get_or_create_collection("data")
 
-# ----- DISCOVER FROM PDF ITSELF -----
-doc_emb = model.encode([text[:300]])  # Use PDF content as query
-results = col.query(query_embeddings=doc_emb, n_results=100)
-top_words = results["documents"][0]
+# -------- EMBEDDING MODEL --------
+encoder = SentenceTransformer("all-MiniLM-L6-v2")
 
-# ----- SELF-LEARN ANIMAL FILTER -----
-word_embs = model.encode(top_words)
-doc_context = model.encode([f"{text[:200]} {' '.join(top_words[:10])}"])
-sims = np.dot(word_embs, doc_context[0]) / (np.linalg.norm(word_embs, axis=1) * np.linalg.norm(doc_context[0]))
+# Create embeddings for each word
+embeddings = encoder.encode(words).tolist()
 
-# ----- TOP BIOLOGICALLY RELEVANT -----
-animals = [w for w, s in zip(top_words, sims) if s > 0.45]
-animals = list(set(animals))[:10]  # Unique, top 10
+# Store in Chroma
+collection.add(
+    ids=[str(i) for i in range(len(words))],
+    documents=words,
+    embeddings=embeddings
+)
 
-print("Animals:", sorted(animals))
+# -------- QUERY --------
+query_word = "animal"
+query_vector = encoder.encode([query_word]).tolist()
 
+results = collection.query(
+    query_embeddings=query_vector,
+    n_results=30
+)
 
+closest_words = results["documents"][0]
+print(closest_words)
 
+# -------- SAVE OUTPUT --------
+with open("output.txt", "w") as file:
+    for w in closest_words:
+        file.write(w + "\n")
 
-
-
-
-
-
-
-from sentence_transformers import SentenceTransformer
-import re
-
-model = SentenceTransformer('path/to/your/local/miniLM-model')
-text = "the dog and a goat along with an elephant chased a huge ball"  # HARDCODED TEST
-chunks = re.findall(r'\b[a-z]{4,12}\b', text.lower())
-print("DEBUG - chunks:", chunks)  # Should show: ['dog', 'goat', 'elephant', ...]
 
