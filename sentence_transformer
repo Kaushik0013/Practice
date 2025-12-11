@@ -35,3 +35,21 @@ animals = [w for w, s in zip(top_words, sims) if s > 0.45]
 animals = list(set(animals))[:10]  # Unique, top 10
 
 print("Animals:", sorted(animals))
+
+
+
+
+
+
+
+
+
+
+from sentence_transformers import SentenceTransformer
+import re
+
+model = SentenceTransformer('path/to/your/local/miniLM-model')
+text = "the dog and a goat along with an elephant chased a huge ball"  # HARDCODED TEST
+chunks = re.findall(r'\b[a-z]{4,12}\b', text.lower())
+print("DEBUG - chunks:", chunks)  # Should show: ['dog', 'goat', 'elephant', ...]
+
