@@ -326,3 +326,34 @@ if st.button("Test DB Connection"):
         conn.close()
     except Exception as e:
         st.error(f"❌ Connection failed: {e}")
+
+
+
+
+###
+
+def save_applicant_data(
+    first_name, middle_name, last_name, dob, gender, marital_status,
+    phone, email, aadhaar, pan, current_address, permanent_address
+):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        query = """
+            INSERT INTO loan_applicants (
+                first_name, middle_name, last_name, dob, gender, marital_status,
+                phone, email, aadhaar, pan, current_address, permanent_address
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        values = (
+            first_name, middle_name, last_name, dob, gender, marital_status,
+            phone, email, aadhaar, pan, current_address, permanent_address
+        )
+        cursor.execute(query, values)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "Details saved successfully!"
+    except Exception as e:
+        return False, str(e)
