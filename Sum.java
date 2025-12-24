@@ -298,3 +298,31 @@ with right_col:
 
 
 CREATE TABLE loan_applicants ( id SERIAL PRIMARY KEY, first_name TEXT, middle_name TEXT, last_name TEXT, dob DATE, gender TEXT, marital_status TEXT, phone TEXT, email TEXT, aadhaar TEXT, pan TEXT, current_address TEXT, permanent_address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP );
+
+
+
+
+import streamlit as st
+import os
+import psycopg2
+from dotenv import load_dotenv
+
+load_dotenv()
+
+def get_db_connection():
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        database=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        port=os.getenv("DB_PORT")
+    )
+
+# 🔍 TEMPORARY TEST BUTTON
+if st.button("Test DB Connection"):
+    try:
+        conn = get_db_connection()
+        st.success("✅ Streamlit connected to PostgreSQL!")
+        conn.close()
+    except Exception as e:
+        st.error(f"❌ Connection failed: {e}")
