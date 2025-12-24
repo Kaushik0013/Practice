@@ -291,3 +291,10 @@ with right_col:
         st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
         
         st.rerun()
+
+
+
+
+
+
+CREATE TABLE loan_applicants ( id SERIAL PRIMARY KEY, first_name TEXT, middle_name TEXT, last_name TEXT, dob DATE, gender TEXT, marital_status TEXT, phone TEXT, email TEXT, aadhaar TEXT, pan TEXT, current_address TEXT, permanent_address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP );
