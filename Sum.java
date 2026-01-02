@@ -247,19 +247,15 @@ import chromadb
 from chromadb.config import Settings
 from dotenv import load_dotenv
 
+# -------------------- ENV & SESSION --------------------
 load_dotenv()
 
 st.set_page_config(page_title="Loan Application with RAG", layout="wide")
 
-# ===============================
-# Session identity (persistent)
-# ===============================
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
-# ===============================
-# DB Connection
-# ===============================
+# -------------------- DB CONNECTION --------------------
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
@@ -269,144 +265,165 @@ def get_db_connection():
         port=os.getenv("DB_PORT")
     )
 
-# ===============================
-# Chat persistence
-# ===============================
+# -------------------- DB FUNCTIONS --------------------
+def save_applicant_data(
+    first_name, middle_name, last_name, dob, gender, marital_status,
+    phone, email, aadhaar, pan, current_address, permanent_address
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO loan_applicants (
+            first_name, middle_name, last_name, dob, gender, marital_status,
+            phone, email, aadhaar, pan, current_address, permanent_address
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+    """, (
+        first_name, middle_name, last_name, dob, gender, marital_status,
+        phone, email, aadhaar, pan, current_address, permanent_address
+    ))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
 def save_chat_message(session_id, role, message):
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
+    cursor = conn.cursor()
+    cursor.execute("""
         INSERT INTO chat_history (session_id, role, message)
         VALUES (%s, %s, %s)
-        """,
-        (session_id, role, message)
-    )
+    """, (session_id, role, message))
     conn.commit()
-    cur.close()
+    cursor.close()
     conn.close()
 
 def load_chat_history(session_id):
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
+    cursor = conn.cursor()
+    cursor.execute("""
         SELECT role, message
         FROM chat_history
         WHERE session_id = %s
         ORDER BY created_at
-        """,
-        (session_id,)
-    )
-    rows = cur.fetchall()
-    cur.close()
+    """, (session_id,))
+    rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return rows
 
-# ===============================
-# 🔧 LOAD DB CHAT INTO SESSION
-# ===============================
+# -------------------- LOAD CHAT HISTORY (PERSISTENT) --------------------
 if "chat_history" not in st.session_state:
-    db_rows = load_chat_history(st.session_state.session_id)
+    rows = load_chat_history(st.session_state.session_id)
     st.session_state.chat_history = [
-        {"role": r, "content": m} for r, m in db_rows
+        {"role": role, "content": msg} for role, msg in rows
     ]
 
-# ===============================
-# Model + RAG (UNCHANGED)
-# ===============================
+# -------------------- MODEL & RAG --------------------
 @st.cache_resource
 def load_model():
-    model_path = "gemma"
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained("gemma", trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None,
+        "gemma",
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        device_map="auto",
         trust_remote_code=True
     )
     return model, tokenizer
 
 @st.cache_resource
 def load_faq_system():
-    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    embedder = SentenceTransformer("all-MiniLM-L6-v2")
     client = chromadb.Client(Settings(anonymized_telemetry=False))
     collection = client.get_or_create_collection("loan_faqs")
 
-    with open("card_activation_faqs.json", "r") as f:
-        faq_data = json.load(f)
-
     if collection.count() == 0:
-        for faq in faq_data["faqs"]:
+        with open("card_activation_faqs.json") as f:
+            data = json.load(f)
+        for faq in data["faqs"]:
             text = f"Q: {faq['question']}\nA: {faq['answer']}"
             collection.add(
                 documents=[text],
-                embeddings=[embedding_model.encode(text).tolist()],
+                embeddings=[embedder.encode(text).tolist()],
                 ids=[faq["id"]]
             )
+    return embedder, collection
 
-    return embedding_model, collection
-
-def generate_response(user_input, form_context):
+def generate_response(user_input, context):
     model, tokenizer = load_model()
-    embed_model, faq_collection = load_faq_system()
+    embedder, collection = load_faq_system()
+
+    faq = collection.query(
+        query_embeddings=[embedder.encode(user_input).tolist()],
+        n_results=3
+    )
+    faq_text = "\n".join(faq["documents"][0]) if faq["documents"] else ""
 
     messages = [
-        {"role": "system", "content": form_context}
+        {"role": "system", "content": f"{context}\n\nFAQ:\n{faq_text}"},
+        *st.session_state.chat_history[-10:],
+        {"role": "user", "content": user_input}
     ]
-
-    messages.extend(st.session_state.chat_history[-10:])
-    messages.append({"role": "user", "content": user_input})
 
     input_ids = tokenizer.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
     ).to(model.device)
 
-    outputs = model.generate(
-        input_ids,
-        max_new_tokens=512,
-        temperature=0.3,
-        top_p=0.9,
-        do_sample=True
-    )
-
-    response = tokenizer.decode(
-        outputs[0][input_ids.shape[-1]:],
-        skip_special_tokens=True
-    )
-
+    output = model.generate(input_ids, max_new_tokens=400)
+    response = tokenizer.decode(output[0][input_ids.shape[-1]:], skip_special_tokens=True)
     return response.strip()
 
-# ===============================
-# UI (UNCHANGED)
-# ===============================
+# -------------------- UI --------------------
 left_col, right_col = st.columns([2, 1], gap="large")
 
+# -------- LEFT: PERSONAL DETAILS (UNCHANGED) --------
+with left_col:
+    st.title("Personal Details")
+    st.markdown("---")
+
+    col1, col2, col3 = st.columns(3)
+    first_name = col1.text_input("First Name")
+    middle_name = col2.text_input("Middle Name")
+    last_name = col3.text_input("Last Name")
+
+    col1, col2, col3 = st.columns(3)
+    dob = col1.date_input("Date of Birth", value=None, max_value=date.today())
+    gender = col2.selectbox("Gender", ["Select Gender", "Male", "Female"])
+    marital_status = col3.selectbox("Marital Status", ["Select", "Single", "Married"])
+
+    phone = st.text_input("Phone")
+    email = st.text_input("Email")
+    aadhaar = st.text_input("Aadhaar")
+    pan = st.text_input("PAN")
+
+    current_address = st.text_area("Current Address")
+    permanent_address = st.text_area("Permanent Address")
+
+    if st.button("Save Details"):
+        save_applicant_data(
+            first_name, middle_name, last_name, dob, gender,
+            marital_status, phone, email, aadhaar, pan,
+            current_address, permanent_address
+        )
+        st.success("Details saved successfully!")
+
+# -------- RIGHT: CHATBOT --------
 with right_col:
-    st.markdown("### 💬 Your Loan Companion")
+    st.markdown("### 🤖 Your Loan Companion")
 
-    chat_container = st.container(height=400, border=True)
-    with chat_container:
-        for msg in st.session_state.chat_history:
-            st.chat_message(msg["role"]).write(msg["content"])
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
 
-    with st.form("chat_form", clear_on_submit=True):
-        user_input = st.text_input("Type your message...")
-        send = st.form_submit_button("Send")
+    user_input = st.chat_input("Ask something...")
 
-    if send and user_input:
-        response = generate_response(user_input, "Loan application assistant")
+    if user_input:
+        context = f"Applicant name: {first_name} {last_name}"
+        bot_response = generate_response(user_input, context)
 
-        # 🔧 Save to DB
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
         save_chat_message(st.session_state.session_id, "user", user_input)
-        save_chat_message(st.session_state.session_id, "assistant", response)
 
-        # 🔧 Update session
-        st.session_state.chat_history.append(
-            {"role": "user", "content": user_input}
-        )
-        st.session_state.chat_history.append(
-            {"role": "assistant", "content": response}
-        )
+        st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+        save_chat_message(st.session_state.session_id, "assistant", bot_response)
 
         st.rerun()
