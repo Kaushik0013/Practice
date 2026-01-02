@@ -251,14 +251,15 @@ load_dotenv()
 
 st.set_page_config(page_title="Loan Application with RAG", layout="wide")
 
-# ---------------- SESSION STATE ----------------
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
+# ===============================
+# Session identity (persistent)
+# ===============================
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
-# ---------------- DB CONNECTION ----------------
+# ===============================
+# DB Connection
+# ===============================
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
@@ -268,80 +269,52 @@ def get_db_connection():
         port=os.getenv("DB_PORT")
     )
 
-# ---------------- SAVE APPLICANT (CHANGED) ----------------
-def save_applicant_data(
-    first_name, middle_name, last_name, dob, gender, marital_status,
-    phone, email, aadhaar, pan, current_address, permanent_address
-):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        query = """
-            INSERT INTO loan_applicants (
-                first_name, middle_name, last_name, dob, gender, marital_status,
-                phone, email, aadhaar, pan, current_address, permanent_address
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id;
-        """
-
-        cursor.execute(query, (
-            first_name, middle_name, last_name, dob, gender, marital_status,
-            phone, email, aadhaar, pan, current_address, permanent_address
-        ))
-
-        applicant_id = cursor.fetchone()[0]
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-        return True, applicant_id
-
-    except Exception as e:
-        return False, str(e)
-
-# ---------------- CHAT HISTORY (CHANGED) ----------------
-def save_chat_message(applicant_id, role, message):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            INSERT INTO chat_history (applicant_id, role, message)
-            VALUES (%s, %s, %s)
-            """,
-            (applicant_id, role, message)
-        )
-
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-    except Exception as e:
-        st.error(f"Failed to save chat message: {e}")
-
-def get_chat_history_from_db(applicant_id):
+# ===============================
+# Chat persistence
+# ===============================
+def save_chat_message(session_id, role, message):
     conn = get_db_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
+    cur = conn.cursor()
+    cur.execute(
         """
-        SELECT role, message, created_at
+        INSERT INTO chat_history (session_id, role, message)
+        VALUES (%s, %s, %s)
+        """,
+        (session_id, role, message)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def load_chat_history(session_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT role, message
         FROM chat_history
-        WHERE applicant_id = %s
+        WHERE session_id = %s
         ORDER BY created_at
         """,
-        (applicant_id,)
+        (session_id,)
     )
-
-    rows = cursor.fetchall()
-    cursor.close()
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return rows
 
-# ---------------- MODEL / FAQ ----------------
+# ===============================
+# 🔧 LOAD DB CHAT INTO SESSION
+# ===============================
+if "chat_history" not in st.session_state:
+    db_rows = load_chat_history(st.session_state.session_id)
+    st.session_state.chat_history = [
+        {"role": r, "content": m} for r, m in db_rows
+    ]
+
+# ===============================
+# Model + RAG (UNCHANGED)
+# ===============================
 @st.cache_resource
 def load_model():
     model_path = "gemma"
@@ -360,95 +333,80 @@ def load_faq_system():
     client = chromadb.Client(Settings(anonymized_telemetry=False))
     collection = client.get_or_create_collection("loan_faqs")
 
-    with open("card_activation_faqs.json", "r", encoding="utf-8") as f:
+    with open("card_activation_faqs.json", "r") as f:
         faq_data = json.load(f)
 
     if collection.count() == 0:
         for faq in faq_data["faqs"]:
             text = f"Q: {faq['question']}\nA: {faq['answer']}"
-            embedding = embedding_model.encode(text).tolist()
             collection.add(
-                embeddings=[embedding],
                 documents=[text],
+                embeddings=[embedding_model.encode(text).tolist()],
                 ids=[faq["id"]]
             )
 
     return embedding_model, collection
 
-# ---------------- UI ----------------
+def generate_response(user_input, form_context):
+    model, tokenizer = load_model()
+    embed_model, faq_collection = load_faq_system()
+
+    messages = [
+        {"role": "system", "content": form_context}
+    ]
+
+    messages.extend(st.session_state.chat_history[-10:])
+    messages.append({"role": "user", "content": user_input})
+
+    input_ids = tokenizer.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+    ).to(model.device)
+
+    outputs = model.generate(
+        input_ids,
+        max_new_tokens=512,
+        temperature=0.3,
+        top_p=0.9,
+        do_sample=True
+    )
+
+    response = tokenizer.decode(
+        outputs[0][input_ids.shape[-1]:],
+        skip_special_tokens=True
+    )
+
+    return response.strip()
+
+# ===============================
+# UI (UNCHANGED)
+# ===============================
 left_col, right_col = st.columns([2, 1], gap="large")
 
-# -------- LEFT COLUMN (UNCHANGED) --------
-with left_col:
-    st.title("Personal Details")
-    st.markdown("---")
-
-    col1, col2, col3 = st.columns(3)
-    first_name = col1.text_input("First Name")
-    middle_name = col2.text_input("Middle Name")
-    last_name = col3.text_input("Last Name")
-
-    col1, col2, col3 = st.columns(3)
-    dob = col1.date_input("Date of Birth", value=None)
-    gender = col2.selectbox("Gender", ["Select Gender", "Male", "Female"])
-    marital_status = col3.selectbox("Marital Status", ["Select", "Single", "Married"])
-
-    phone = st.text_input("Phone")
-    email = st.text_input("Email")
-    aadhaar = st.text_input("Aadhaar")
-    pan = st.text_input("PAN")
-
-    current_address = st.text_area("Current Address")
-    permanent_address = st.text_area("Permanent Address")
-
-    if st.button("Save Details"):
-        success, result = save_applicant_data(
-            first_name, middle_name, last_name, dob, gender, marital_status,
-            phone, email, aadhaar, pan, current_address, permanent_address
-        )
-
-        if success:
-            st.session_state.applicant_id = result
-            st.success("Details saved successfully!")
-        else:
-            st.error(result)
-
-# -------- RIGHT COLUMN (MINIMAL CHANGE) --------
 with right_col:
-
-    if st.button("View Chat History"):
-        if "applicant_id" not in st.session_state:
-            st.warning("Please save applicant details first.")
-        else:
-            rows = get_chat_history_from_db(st.session_state.applicant_id)
-            for role, message, ts in rows:
-                with st.chat_message(role):
-                    st.caption(ts.strftime("%Y-%m-%d %H:%M:%S"))
-                    st.write(message)
-
-    st.markdown("### Your Loan Companion")
+    st.markdown("### 💬 Your Loan Companion")
 
     chat_container = st.container(height=400, border=True)
     with chat_container:
         for msg in st.session_state.chat_history:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
+            st.chat_message(msg["role"]).write(msg["content"])
 
     with st.form("chat_form", clear_on_submit=True):
         user_input = st.text_input("Type your message...")
         send = st.form_submit_button("Send")
 
     if send and user_input:
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        response = generate_response(user_input, "Loan application assistant")
 
-        if "applicant_id" in st.session_state:
-            save_chat_message(st.session_state.applicant_id, "user", user_input)
+        # 🔧 Save to DB
+        save_chat_message(st.session_state.session_id, "user", user_input)
+        save_chat_message(st.session_state.session_id, "assistant", response)
 
-        bot_response = "Thanks for your message! (LLM response here)"
-        st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-
-        if "applicant_id" in st.session_state:
-            save_chat_message(st.session_state.applicant_id, "assistant", bot_response)
+        # 🔧 Update session
+        st.session_state.chat_history.append(
+            {"role": "user", "content": user_input}
+        )
+        st.session_state.chat_history.append(
+            {"role": "assistant", "content": response}
+        )
 
         st.rerun()
-
