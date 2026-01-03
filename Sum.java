@@ -251,8 +251,7 @@ load_dotenv()
  
 st.set_page_config(page_title="Loan Application with RAG", layout="wide")
  
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
+
  
 if "session_id" not in st.session_state:
     st.session_state.session_id= str(uuid.uuid4())
@@ -283,20 +282,22 @@ def save_applicant_data(
                 phone, email, aadhaar, pan, current_address, permanent_address
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
         """
         values = (
             first_name, middle_name, last_name, dob, gender, marital_status,
             phone, email, aadhaar, pan, current_address, permanent_address
         )
         cursor.execute(query, values)
+        applicant_id= cursor.fetchone()[0]
         conn.commit()
         cursor.close()
         conn.close()
-        return True, "Details saved successfully!"
+        return True,applicant_id, "Details saved successfully!"
     except Exception as e:
         return False, str(e)
    
-def save_chat_message(session_id, role, message):
+def save_chat_message(applicant_id,session_id, role, message):
     try:
         conn= get_db_connection()
         cursor= conn.cursor()
@@ -310,7 +311,7 @@ def save_chat_message(session_id, role, message):
             )
             VALUES(%s,%s,%s)
             """,
-            (session_id, role, message)
+            (applicant_id,session_id, role, message)
         )
         conn.commit()
         cursor.close()
@@ -337,6 +338,33 @@ def get_chat_history_from_db(session_id):
     conn.close()
  
     return rows
+
+def get_chat_history_by_applicant(applicant_id):
+    conn= get_db_connection()
+    cursor= conn.cursor()
+ 
+    cursor.execute(
+        """
+        SELECT role, message, created_at
+        FROM chat_history
+        WHERE applicant_id = %s
+        ORDER BY created_at
+        """,
+        (applicant_id,)
+    )
+    rows= cursor.fetchall()
+    cursor.close()
+    conn.close()
+ 
+    return rows
+
+if 'chat_history' not in st.session_state:
+    db_rows= get_chat_history_from_db(st.session_state.session_id)
+
+    st.session_state.chat_history=[
+        {"role":role, "content":message}
+        for role, message,_ in db_rows
+    ]
  
     ## Loading FAQ System:
  
@@ -579,13 +607,19 @@ with left_col:
             )
  
             if success:
-                st.success("Accepted!")
+                st.session_state.applicant_id=msg
+                st.success(f"Applicant ID: {msg}")
             else:
                 st.error("Rejected!")
  
 with right_col:
     if st.button("View Chat History"):
-        chat_rows= get_chat_history_from_db(st.session_state.session_id)
+        if "applicant_id" not in st.session_state:
+            st.warning("Please save applicant details first.")
+        else:
+            chat_rows= get_chat_history_by_applicant(st.session_state.applicant_id)
+
+            st.markdown(f"### Chat history for Applicant ID: {st.session_state.applicant_id}")
  
         if not chat_rows:
             st.info("No chat history found for this session.")
