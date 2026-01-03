@@ -255,6 +255,9 @@ st.set_page_config(page_title="Loan Application with RAG", layout="wide")
  
 if "session_id" not in st.session_state:
     st.session_state.session_id= str(uuid.uuid4())
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history=[]
  
  
 ##PGSQL connection:
@@ -293,9 +296,9 @@ def save_applicant_data(
         conn.commit()
         cursor.close()
         conn.close()
-        return True,applicant_id, "Details saved successfully!"
+        return True,applicant_id
     except Exception as e:
-        return False, str(e)
+        return False, None
    
 def save_chat_message(applicant_id,session_id, role, message):
     try:
@@ -305,6 +308,7 @@ def save_chat_message(applicant_id,session_id, role, message):
         cursor.execute(
             """
             INSERT INTO chat_history(
+            applicant_id,
             session_id,
             role,
             message
@@ -358,13 +362,13 @@ def get_chat_history_by_applicant(applicant_id):
  
     return rows
 
-if 'chat_history' not in st.session_state:
-    db_rows= get_chat_history_from_db(st.session_state.session_id)
+# if 'chat_history' not in st.session_state:
+#     db_rows= get_chat_history_from_db(st.session_state.session_id)
 
-    st.session_state.chat_history=[
-        {"role":role, "content":message}
-        for role, message,_ in db_rows
-    ]
+#     st.session_state.chat_history=[
+#         {"role":role, "content":message}
+#         for role, message,_ in db_rows
+#     ]
  
     ## Loading FAQ System:
  
@@ -601,14 +605,20 @@ with left_col:
     col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
         if st.button("Save Details", use_container_width=True):
-            success, msg = save_applicant_data(
+            success, applicant_id = save_applicant_data(
                 first_name,middle_name,last_name,dob,gender,marital_status,
                 phone, email, aadhaar, pan, current_address, permanent_address
             )
  
             if success:
-                st.session_state.applicant_id=msg
-                st.success(f"Applicant ID: {msg}")
+                st.session_state.applicant_id=applicant_id
+
+                db_rows=get_chat_history_by_applicant(applicant_id)
+                st.session_state.chat_history=[
+                    {"role":role, "content":message}
+                    for role, message,_ in db_rows
+                ]
+                st.success(f"Applicant ID: {applicant_id}")
             else:
                 st.error("Rejected!")
  
@@ -622,9 +632,9 @@ with right_col:
             st.markdown(f"### Chat history for Applicant ID: {st.session_state.applicant_id}")
  
         if not chat_rows:
-            st.info("No chat history found for this session.")
+            st.info("No chat history found.")
         else:
-            st.markdown("Previous chat History:")
+            # st.markdown("Previous chat History:")
  
             for role,message, timestamp in chat_rows:
                 with st.chat_message(role):
@@ -656,11 +666,11 @@ with right_col:
        
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         #change made
-        save_chat_message(st.session_state.session_id, "user", user_input)
+        save_chat_message(st.session_state.applicant_id,st.session_state.session_id, "user", user_input)
  
         st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
        
-        save_chat_message(st.session_state.session_id, "assistant", bot_response)
+        save_chat_message(st.session_state.applicant_id,st.session_state.session_id, "assistant", bot_response)
  
  
        
